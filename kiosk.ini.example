@@ -1,0 +1,16 @@
+[kiosk]
+; index.html が読み込む /conf.js の API_BASE_URL と同じ値
+api_base_url = https://example.com/api
+; 全画面表示 (開発時は false)
+fullscreen = true
+; タッチパネル運用ならカーソルを隠す
+hide_cursor = true
+; API タイムアウト(秒)
+timeout = 10
+
+; カメラ: auto (Pi カメラ → USB カメラの順に探す) / picamera2 / デバイス番号 (0, 1...) / /dev/video0 など
+camera = auto
+; プレビューを鏡像表示する (利用者の方を向いたカメラなら true が自然)
+camera_mirror = true
+; 同じバーコードは、写らなくなってからこの秒数が経つまで再打刻しない
+scan_cooldown = 5
