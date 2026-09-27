@@ -58,6 +58,7 @@ PREVIEW_INTERVAL_MS = 66          # カメラプレビューの更新間隔
 SCANNER_RESET_SEC = 0.5           # これ以上キー入力が空いたらバーコード入力をリセット
 
 SCAN_HINT = "バーコードをカメラにかざしてください"
+PAUSED_HINT = "カメラは一時停止中です"
 
 
 # ---------------------------------------------------------------- API
@@ -153,8 +154,7 @@ def card(master, **kw):
 # ---------------------------------------------------------------- App
 
 class KioskApp:
-    def __init__(self, root, api, camera_options=None, fullscreen=True,
-                 hide_cursor=False, window_size=(1024, 600)):
+    def __init__(self, root, api, camera_options=None, fullscreen=True, hide_cursor=False, window_size=(1024, 600)):
         self.root = root
         self.api = api
         self.results = queue.Queue()   # ワーカースレッド -> UI スレッド
@@ -166,6 +166,7 @@ class KioskApp:
         self.overlay_timer = None
         self.preview_photo = None
         self.idle_status = (SCAN_HINT, TEXT)
+        self.camera_state = None
 
         root.title("入退室管理システム")
         root.configure(bg=BG)
@@ -181,21 +182,23 @@ class KioskApp:
         root.bind("<Control-q>", lambda e: self.quit())
         root.bind("<Key>", self._on_key)
 
-        self._setup_fonts()
-        self._build()
-
         self.scanner = None
         missing = camera.missing_requirements()
-        if missing:
-            self._set_preview_text("カメラ読み取りは使えません\n(未インストール: %s)" % ", ".join(missing))
-            self._set_idle_status("「名前から選んで打刻」を使ってください", RED)
-        else:
+        if not missing:
             self.scanner = camera.Scanner(
                 on_scan=lambda code: self.results.put(("scan", True, code)),
                 on_status=lambda state, msg: self.results.put(("camera_status", True, (state, msg))),
                 **(camera_options or {}))
+
+        self._setup_fonts()
+        self._build()
+
+        if self.scanner:
             self.scanner.start()
             self._update_preview()
+        else:
+            self._set_preview_text("カメラ読み取りは使えません\n(未インストール: %s)" % ", ".join(missing))
+            self._set_idle_status("「名前から選んで打刻」を使ってください", RED)
 
         self.root.after(100, self._poll_results)
         self._tick_clock()
@@ -251,8 +254,14 @@ class KioskApp:
         self.lbl_time.pack()
 
         # 下から積んで、プレビューには残りの領域を全部使わせる
-        FlatButton(left, "名前から選んで打刻", self.open_picker, GRAY_BTN, GRAY_BTN_DARK,
-                   self.f_body, pady=p // 2).pack(side="bottom", fill="x", padx=p, pady=(0, p))
+        buttons = tk.Frame(left, bg=CARD)
+        buttons.pack(side="bottom", fill="x", padx=p, pady=(0, p))
+        FlatButton(buttons, "名前から選んで打刻", self.open_picker, GRAY_BTN, GRAY_BTN_DARK,
+                   self.f_body, pady=p // 2).pack(side="left", fill="x", expand=True)
+        if self.scanner:
+            self.btn_camera = FlatButton(buttons, "カメラ停止", self.toggle_camera, GRAY_BTN,
+                                         GRAY_BTN_DARK, self.f_body, pady=p // 2, padx=p)
+            self.btn_camera.pack(side="left", padx=(p // 2, 0))
         self.lbl_status = tk.Label(left, text=SCAN_HINT, bg=CARD, fg=TEXT,
                                    font=self.f_body, wraplength=1)
         self.lbl_status.pack(side="bottom", fill="x", padx=p, pady=p // 2)
@@ -262,6 +271,8 @@ class KioskApp:
                                 text="カメラを起動中...", justify="center")
         self.preview.pack(fill="both", expand=True, padx=p)
         self.preview.bind("<Configure>", self._on_preview_resize)
+        # 一時停止中は映像エリアのタップでも再開できる
+        self.preview.bind("<ButtonRelease-1>", lambda e: self.scanner and self.resume_camera())
 
         # --- 中央: 入退室ログ
         mid = card(body)
@@ -317,7 +328,14 @@ class KioskApp:
 
     def _on_camera_status(self, ok, value):
         state, message = value
-        if state == "ready":
+        previous, self.camera_state = self.camera_state, state
+        if state == "starting":
+            if previous in (None, "sleeping"):   # エラー後の再試行では表示を変えない
+                self._set_preview_text("カメラを起動中...")
+        elif state == "sleeping":
+            self._set_preview_text(PAUSED_HINT + "\n\nタップすると再開します")
+            self._set_idle_status(PAUSED_HINT, MUTED)
+        elif state == "ready":
             if ImageTk is None:
                 self._set_preview_text("カメラ読み取り中\n(プレビューには Pillow が必要です)")
             self._set_idle_status(SCAN_HINT, TEXT)
@@ -329,6 +347,20 @@ class KioskApp:
         self.idle_status = (text, color)
         if not self.busy:
             self.lbl_status.config(text=text, fg=color)
+
+    # ---- camera pause
+
+    def toggle_camera(self):
+        if self.scanner.awake.is_set():
+            self.scanner.sleep()
+            self.btn_camera.config(text="カメラ再開")
+        else:
+            self.resume_camera()
+
+    def resume_camera(self):
+        if not self.scanner.awake.is_set():
+            self.scanner.wake()
+            self.btn_camera.config(text="カメラ停止")
 
     # ---- background work
 

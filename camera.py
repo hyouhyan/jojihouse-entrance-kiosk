@@ -112,6 +112,7 @@ class Scanner(threading.Thread):
 
     同じコードは、写らなくなってから cooldown 秒経つまで再通知しない
     (カードをかざしっぱなしで入室→退室と連続打刻されるのを防ぐ)。
+    sleep() でカメラを閉じて待機し、wake() で再びカメラを開く (省エネ用)。
     コールバックはこのスレッドから呼ばれるので、受け側でスレッド間の受け渡しをすること。
     """
 
@@ -128,6 +129,9 @@ class Scanner(threading.Thread):
         self.accepting = threading.Event()   # クリア中は検出しても通知しない
         self.accepting.set()
         self.stopped = threading.Event()
+        self.awake = threading.Event()       # クリア中はカメラを閉じて待機
+        self.awake.set()
+        self._kick = threading.Event()       # 待機中のスレッドを起こす
         self.preview_size = None             # UI 側から (w, h) を設定
         self._lock = threading.Lock()
         self._preview = None
@@ -135,6 +139,15 @@ class Scanner(threading.Thread):
 
     def stop(self):
         self.stopped.set()
+        self._kick.set()
+
+    def sleep(self):
+        self.awake.clear()
+        self._kick.set()
+
+    def wake(self):
+        self.awake.set()
+        self._kick.set()
 
     def take_preview(self):
         """最新のプレビュー画像 (PIL.Image) を取り出す。なければ None"""
@@ -144,25 +157,29 @@ class Scanner(threading.Thread):
 
     def run(self):
         while not self.stopped.is_set():
+            self._kick.clear()
+            if not self.awake.is_set():
+                self.on_status("sleeping", None)
+                self._kick.wait()
+                continue
             try:
                 self.on_status("starting", None)
                 cam = open_camera(self.source)
+                try:
+                    self.on_status("ready", None)
+                    self._loop(cam)
+                    continue
+                finally:
+                    cam.close()
             except Exception as e:
                 self.on_status("error", str(e))
-                self.stopped.wait(self.RETRY_SEC)
-                continue
-            try:
-                self.on_status("ready", None)
-                self._loop(cam)
-            except Exception as e:
-                self.on_status("error", str(e))
-                self.stopped.wait(self.RETRY_SEC)
-            finally:
-                cam.close()
+            # 失敗時は少し待って再試行 (sleep / wake / stop が来たらすぐ抜ける)
+            self._kick.clear()
+            self._kick.wait(self.RETRY_SEC)
 
     def _loop(self, cam):
         interval = 1 / self.FPS
-        while not self.stopped.is_set():
+        while not self.stopped.is_set() and self.awake.is_set():
             started = time.monotonic()
             rgb = cam.read()
             self._detect(rgb[:, :, 1].copy())   # 緑チャンネルをグレースケール代わりに使う
