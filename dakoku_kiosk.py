@@ -46,6 +46,10 @@ BLUE = "#3b82f6"
 BLUE_DARK = "#2563eb"
 GRAY_BTN = "#6b7280"
 GRAY_BTN_DARK = "#4b5563"
+AMBER = "#f59e0b"
+AMBER_DARK = "#d97706"
+LIGHT_BTN = "#e5e7eb"   # gray-200
+LIGHT_BTN_DARK = "#d1d5db"
 GREEN = "#22c55e"
 RED = "#ef4444"
 PREVIEW_BG = "#111827"  # gray-900
@@ -53,7 +57,7 @@ PREVIEW_BG = "#111827"  # gray-900
 REFRESH_INTERVAL_MS = 30_000      # ログ・在室者の定期更新
 USERS_REFRESH_INTERVAL_MS = 300_000  # ユーザー一覧の定期更新
 RESULT_AUTO_CLOSE_MS = 5_000      # 結果表示の自動クローズ
-PICKER_AUTO_CLOSE_MS = 60_000     # 名前選択画面の自動クローズ
+PICKER_AUTO_CLOSE_MS = 60_000     # 名前選択画面・確認画面の自動クローズ
 PREVIEW_INTERVAL_MS = 66          # カメラプレビューの更新間隔
 SCANNER_RESET_SEC = 0.5           # これ以上キー入力が空いたらバーコード入力をリセット
 
@@ -123,8 +127,8 @@ def format_time(iso_time):
 class FlatButton(tk.Label):
     """タッチでも押しやすいフラットなボタン (tk.Button は OS テーマに引きずられるため)"""
 
-    def __init__(self, master, text, command, bg, active_bg, font, **kw):
-        super().__init__(master, text=text, bg=bg, fg="white", font=font,
+    def __init__(self, master, text, command, bg, active_bg, font, fg="white", **kw):
+        super().__init__(master, text=text, bg=bg, fg=fg, font=font,
                          cursor="hand2", **kw)
         self._bg, self._active_bg, self._command = bg, active_bg, command
         self._enabled = True
@@ -138,6 +142,10 @@ class FlatButton(tk.Label):
         # ボタン外で指を離した場合は押下扱いにしない
         if 0 <= event.x <= self.winfo_width() and 0 <= event.y <= self.winfo_height():
             self._command()
+
+    def set_colors(self, bg, active_bg):
+        self._bg, self._active_bg = bg, active_bg
+        self.config(bg=bg)
 
     def set_enabled(self, enabled):
         self._enabled = enabled
@@ -254,14 +262,18 @@ class KioskApp:
         self.lbl_time.pack()
 
         # 下から積んで、プレビューには残りの領域を全部使わせる
-        buttons = tk.Frame(left, bg=CARD)
-        buttons.pack(side="bottom", fill="x", padx=p, pady=(0, p))
-        FlatButton(buttons, "名前から選んで打刻", self.open_picker, GRAY_BTN, GRAY_BTN_DARK,
-                   self.f_body, pady=p // 2).pack(side="left", fill="x", expand=True)
         if self.scanner:
-            self.btn_camera = FlatButton(buttons, "カメラ停止", self.toggle_camera, GRAY_BTN,
-                                         GRAY_BTN_DARK, self.f_body, pady=p // 2, padx=p)
-            self.btn_camera.pack(side="left", padx=(p // 2, 0))
+            # カメラが主役なので、一時停止ボタンを大きく、名前選択は控えめに
+            FlatButton(left, "名前から選んで打刻", self.open_picker, LIGHT_BTN, LIGHT_BTN_DARK,
+                       self.f_small, fg=SUBTEXT, pady=p // 4
+                       ).pack(side="bottom", fill="x", padx=p, pady=(0, p))
+            self.btn_camera = FlatButton(left, "カメラを一時停止", self.toggle_camera, AMBER,
+                                         AMBER_DARK, self.f_button, pady=p * 3 // 4)
+            self.btn_camera.pack(side="bottom", fill="x", padx=p, pady=(0, p // 2))
+        else:
+            FlatButton(left, "名前から選んで打刻", self.open_picker, BLUE, BLUE_DARK,
+                       self.f_button, pady=p * 3 // 4
+                       ).pack(side="bottom", fill="x", padx=p, pady=(0, p))
         self.lbl_status = tk.Label(left, text=SCAN_HINT, bg=CARD, fg=TEXT,
                                    font=self.f_body, wraplength=1)
         self.lbl_status.pack(side="bottom", fill="x", padx=p, pady=p // 2)
@@ -353,14 +365,16 @@ class KioskApp:
     def toggle_camera(self):
         if self.scanner.awake.is_set():
             self.scanner.sleep()
-            self.btn_camera.config(text="カメラ再開")
+            self.btn_camera.config(text="▶ カメラを再開")
+            self.btn_camera.set_colors(BLUE, BLUE_DARK)
         else:
             self.resume_camera()
 
     def resume_camera(self):
         if not self.scanner.awake.is_set():
             self.scanner.wake()
-            self.btn_camera.config(text="カメラ停止")
+            self.btn_camera.config(text="カメラを一時停止")
+            self.btn_camera.set_colors(AMBER, AMBER_DARK)
 
     # ---- background work
 
@@ -479,14 +493,15 @@ class KioskApp:
     # ---- overlays
 
     def _open_overlay(self, header_text, header_color, lines=(), build=None,
-                      auto_close_ms=RESULT_AUTO_CLOSE_MS):
+                      auto_close_ms=RESULT_AUTO_CLOSE_MS, tall=False, actions=None):
+        """actions: フッターのボタン [(text, command, bg, active_bg)]。省略時は「閉じる」のみ"""
         self.close_overlay()
         p = self.pad
         shade = tk.Frame(self.root, bg="#6b7280")
         shade.place(x=0, y=0, relwidth=1, relheight=1)
         shade.bind("<Button-1>", lambda e: self.close_overlay())
         box = tk.Frame(shade, bg=CARD)
-        if build:
+        if tall:
             box.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.6, relheight=0.9)
         else:
             box.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.5)
@@ -495,8 +510,10 @@ class KioskApp:
         # フッターを先に下へ置き、本文は残りの領域を使う
         footer = tk.Frame(box, bg=CARD)
         footer.pack(side="bottom", fill="x", padx=p, pady=p)
-        FlatButton(footer, "閉じる", self.close_overlay, GRAY_BTN, GRAY_BTN_DARK,
-                   self.f_body, padx=p * 2, pady=p // 2).pack(side="right")
+        for text, command, bg, active_bg in reversed(
+                actions or [("閉じる", self.close_overlay, GRAY_BTN, GRAY_BTN_DARK)]):
+            FlatButton(footer, text, command, bg, active_bg, self.f_body,
+                       padx=p * 2, pady=p // 2).pack(side="right", padx=(p // 2, 0))
         tk.Frame(box, bg=BORDER, height=1).pack(side="bottom", fill="x")
         content = tk.Frame(box, bg=CARD)
         content.pack(fill="both", expand=True, padx=p * 1.5, pady=p)
@@ -529,11 +546,26 @@ class KioskApp:
     def show_error(self, message):
         self._open_overlay("エラー", RED, [(message, self.f_body)])
 
-    def open_picker(self):
-        self._open_overlay("名前から選んで打刻", BLUE, build=self._build_picker,
+    def open_picker(self, selected=None):
+        self._open_overlay("名前から選んで打刻", BLUE, tall=True,
+                           build=lambda content: self._build_picker(content, selected),
                            auto_close_ms=PICKER_AUTO_CLOSE_MS)
 
-    def _build_picker(self, content):
+    def confirm_punch(self, user, index):
+        """名前選択での打刻前に、選んだ人が正しいか確認する"""
+        def ok():
+            self.close_overlay()
+            self.punch(user.get("barcode"))
+
+        self._open_overlay(
+            "確認", BLUE,
+            [(user.get("name", ""), self.f_button),
+             ("この名前で打刻します。よろしいですか？", self.f_body)],
+            auto_close_ms=PICKER_AUTO_CLOSE_MS,
+            actions=[("戻る", lambda: self.open_picker(index), GRAY_BTN, GRAY_BTN_DARK),
+                     ("打刻する", ok, BLUE, BLUE_DARK)])
+
+    def _build_picker(self, content, selected=None):
         p = self.pad
         if not self.users:
             tk.Label(content, text="ユーザー一覧を取得できていません", bg=CARD, fg=RED,
@@ -545,7 +577,7 @@ class KioskApp:
         def submit():
             sel = listbox.curselection()
             if sel:
-                self.punch(users[sel[0]].get("barcode"))
+                self.confirm_punch(users[sel[0]], sel[0])
 
         button = FlatButton(content, "入退室記録", submit, BLUE, BLUE_DARK,
                             self.f_button, pady=p // 2)
@@ -567,6 +599,11 @@ class KioskApp:
             listbox.insert("end", user.get("name", ""))
         listbox.bind("<<ListboxSelect>>",
                      lambda e: button.set_enabled(bool(listbox.curselection())))
+        # 確認画面から「戻る」で来たときは、選んでいた人を選択した状態にする
+        if selected is not None and selected < len(users):
+            listbox.selection_set(selected)
+            listbox.see(selected)
+            button.set_enabled(True)
 
 
 # ---------------------------------------------------------------- main
